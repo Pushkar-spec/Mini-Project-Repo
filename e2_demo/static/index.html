@@ -1,0 +1,1828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VersionVault: Journal Publication and Manuscript Management</title>
+  <style>
+    /* ── Reset & Variables ──────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --accent: #58a6ff;
+      --accent2: #8957e5;
+      --green: #3fb950;
+      --red: #f85149;
+      --amber: #d29922;
+      --purple: #bc8cff;
+      --teal: #39c5bb;
+      --text: #c9d1d9;
+      --text-bright: #f0f6fc;
+      --muted: #8b949e;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header & Role Bar ──────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand h1 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.01em;
+    }
+    .brand span {
+      font-size: 0.76rem;
+      color: var(--muted);
+      border-left: 1px solid var(--border);
+      padding-left: 10px;
+    }
+
+    .role-switcher {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 4px 8px;
+    }
+    .role-switcher label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-right: 4px;
+    }
+    .role-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .role-btn:hover {
+      background: rgba(255,255,255,0.06);
+    }
+    .role-btn.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .role-btn.active.editor-role { background: var(--purple); }
+    .role-btn.active.reviewer-role { background: var(--teal); }
+
+    /* ── Workflow Stepper ───────────────────────────────── */
+    .stepper-bar {
+      background: #11141a;
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      overflow-x: auto;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .step-node {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+      background: transparent;
+      white-space: nowrap;
+    }
+    .step-node.completed {
+      color: var(--green);
+    }
+    .step-node.current {
+      color: #fff;
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(88,166,255,0.3);
+    }
+    .step-node.rejected {
+      color: #fff;
+      background: var(--red);
+    }
+    .step-sep {
+      color: var(--border);
+      font-size: 0.75rem;
+    }
+
+    /* ── Lock Banner ────────────────────────────────────── */
+    #lock-banner {
+      display: none;
+      background: linear-gradient(90deg, #1f2d1e, #132415);
+      border-bottom: 1px solid var(--green);
+      color: var(--green);
+      font-size: 0.8rem;
+      font-weight: 700;
+      padding: 8px 20px;
+      text-align: center;
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Three-column layout ─────────────────────────────── */
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1.05fr 1fr;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .col {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .col:last-child { border-right: none; }
+
+    .col-header {
+      background: var(--surface2);
+      padding: 10px 14px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .col-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ── Form Controls ───────────────────────────────────── */
+    label { font-size: 0.75rem; color: var(--muted); display: block; margin-bottom: 4px; font-weight: 600; }
+
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text-bright);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      font-family: var(--font);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+
+    textarea#editor {
+      flex: 1;
+      min-height: 200px;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    .button-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    button:hover:not(:disabled) { opacity: 0.88; }
+    button:active:not(:disabled) { transform: scale(0.98); }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      filter: grayscale(0.5);
+    }
+
+    button.primary   { background: var(--accent); }
+    button.success   { background: var(--green); color: #0f2d15; font-weight: 700; }
+    button.purple    { background: var(--purple); }
+    button.warn      { background: var(--amber); color: #231904; font-weight: 700; }
+    button.danger    { background: var(--red); }
+    button.secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+
+    .doc-pills {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .doc-pill {
+      font-size: 0.68rem;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--accent);
+      cursor: pointer;
+    }
+    .doc-pill:hover { border-color: var(--accent); }
+
+    /* ── Badges ──────────────────────────────────────────── */
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: inline-block;
+    }
+    .badge.snapshot   { background: #1a3a6a; color: #74b3ff; }
+    .badge.delta      { background: #2a2a3a; color: #8892b0; }
+    .badge.safety     { background: #3a2a00; color: #f5a623; }
+    .badge.restore    { background: #0d3a1a; color: #3ddc84; }
+    .badge.submission { background: #382054; color: #d2a8ff; border: 1px solid #6e40c9; }
+    .badge.revision   { background: #153243; color: #79c0ff; border: 1px solid #1f6feb; }
+    .badge.published  { background: #133a1e; color: #56d364; border: 1px solid #238636; }
+    .badge.accepted   { background: #0f3d3e; color: #56d4c5; }
+    .badge.round-tag  { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+    /* ── Version timeline list ───────────────────────────── */
+    .version-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+
+    .version-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+    .version-item:hover { border-color: var(--accent); }
+    .version-item.selected { border-color: var(--accent); background: #182236; }
+
+    .version-num {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 28px;
+      text-align: right;
+      line-height: 1.1;
+    }
+
+    .version-meta { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+    .version-meta-top { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+    .version-meta-bot { font-size: 0.68rem; color: var(--muted); font-family: var(--mono); }
+
+    /* ── Tabs inside column ──────────────────────────────── */
+    .tab-nav {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      padding: 6px 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 0;
+    }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    /* ── Stats card ──────────────────────────────────────── */
+    .stats-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 0.75rem;
+    }
+    .stats-card h4 { font-size: 0.72rem; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; }
+    .stats-row { display: flex; justify-content: space-between; margin-bottom: 3px; }
+    .stats-val { font-weight: 700; color: var(--green); }
+    .savings-bar { height: 5px; background: var(--border); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+    .savings-fill { height: 100%; background: var(--green); border-radius: 3px; transition: width 0.4s; }
+
+    /* ── Reviews panel ───────────────────────────────────── */
+    .review-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 8px;
+    }
+    .review-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 0.75rem;
+    }
+    .review-body {
+      font-size: 0.78rem;
+      line-height: 1.4;
+      color: var(--text-bright);
+      white-space: pre-wrap;
+    }
+
+    /* ── Preview & Trace ─────────────────────────────────── */
+    .preview-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 160px;
+      max-height: 230px;
+      overflow-y: auto;
+      color: var(--text-bright);
+    }
+    .trace-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .hash-status {
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+    .hash-ok  { background: #0d3a1a; color: var(--green); }
+    .hash-err { background: #3a0d0d; color: var(--red); }
+
+    /* ── Compare view ────────────────────────────────────── */
+    .diff-container {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      white-space: pre-wrap;
+      max-height: 280px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    ins { background: rgba(63, 185, 80, 0.25); color: #7ee787; text-decoration: none; padding: 1px 2px; border-radius: 3px; }
+    del { background: rgba(248, 81, 73, 0.25); color: #ffa198; text-decoration: line-through; padding: 1px 2px; border-radius: 3px; }
+
+    /* ── Bottom Section ─────────────────────────────────── */
+    .bottom {
+      border-top: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+    }
+    .bottom-panel {
+      border-right: 1px solid var(--border);
+      padding: 12px 16px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .bottom-panel:last-child { border-right: none; }
+    .bottom-panel h3 { font-size: 0.72rem; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.06em; }
+
+    .audit-list { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+    .audit-item {
+      display: flex;
+      gap: 8px;
+      font-size: 0.72rem;
+      border-bottom: 1px solid var(--border);
+      padding: 3px 0;
+    }
+    .audit-type { color: var(--accent); font-weight: 600; min-width: 170px; }
+    .audit-meta { color: var(--muted); }
+
+    .demo-controls {
+      padding: 12px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .demo-controls h3 { font-size: 0.72rem; text-transform: uppercase; color: var(--muted); letter-spacing: 0.06em; width: 100%; margin-bottom: 2px; }
+
+    /* ── Toast ───────────────────────────────────────────── */
+    #toast-area {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 9999;
+    }
+    .toast {
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      max-width: 380px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      animation: slideIn 0.2s ease;
+    }
+    .toast.success { background: #0d3a1a; color: var(--green); border: 1px solid var(--green); }
+    .toast.error   { background: #3a0d0d; color: var(--red);   border: 1px solid var(--red); }
+    .toast.info    { background: var(--surface2); color: var(--text-bright); border: 1px solid var(--border); }
+    @keyframes slideIn { from { opacity:0; transform: translateX(20px); } to { opacity:1; transform: none; } }
+
+    .pagination { display: flex; gap: 6px; align-items: center; font-size: 0.75rem; }
+    .pagination button { padding: 3px 8px; font-size: 0.72rem; }
+    .page-info { color: var(--muted); }
+
+    /* Modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(2px);
+      z-index: 9000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      width: 440px;
+      max-width: 90vw;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ Header -->
+<header>
+  <div class="brand">
+    <h1>⚡ VersionVault: Journal Publication &amp; Manuscript Management</h1>
+    <span>E2 Engine Persistence · E3 Diff · E4 RBAC Simulation</span>
+  </div>
+
+  <div class="role-switcher">
+    <label>Simulated Role:</label>
+    <button class="role-btn active" data-user="alice" data-role="author" id="role-alice">Author (Alice)</button>
+    <button class="role-btn" data-user="eric" data-role="editor" id="role-eric">Editor (Eric)</button>
+    <button class="role-btn" data-user="rita" data-role="reviewer" id="role-rita">Reviewer (Rita)</button>
+    <button class="role-btn" data-user="raj" data-role="reviewer" id="role-raj">Reviewer (Raj)</button>
+    <button id="btn-refresh-all" class="secondary" style="margin-left:8px;padding:4px 10px;font-size:0.75rem;" title="Refresh all state from server">🔄 Refresh</button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════ 8-Step Stepper -->
+<div class="stepper-bar" id="stepper-bar">
+  <div class="step-node current" data-step="DRAFT">1. DRAFT</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="SUBMITTED">2. SUBMITTED</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="UNDER_REVIEW_1">3. UNDER REVIEW (R1)</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="REVISION_REQUESTED">4. REVISION REQUESTED</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="REVISED">5. REVISED (R2)</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="UNDER_REVIEW_2">6. UNDER REVIEW (R2)</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="ACCEPTED">7. ACCEPTED</div>
+  <span class="step-sep">→</span>
+  <div class="step-node" data-step="PUBLISHED">8. PUBLISHED</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ Lock Banner -->
+<div id="lock-banner">
+  🔒 MANUSCRIPT PUBLISHED &amp; PERMANENTLY LOCKED — No further modifications, drafts, or restores are permitted.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ Three Columns -->
+<div class="columns">
+
+  <!-- ────────────── LEFT: Editor & Workflow Actions ───── -->
+  <div class="col">
+    <div class="col-header">
+      <span>Editor &amp; Manuscript Workflow</span>
+      <span id="manuscript-status-badge" class="badge">DRAFT</span>
+    </div>
+    <div class="col-body">
+
+      <div>
+        <label>Document / Manuscript ID</label>
+        <input type="text" id="doc-id" value="manuscript-1" />
+        <div class="doc-pills">
+          <span class="doc-pill" onclick="switchDoc('manuscript-1')">manuscript-1 (Journal)</span>
+          <span class="doc-pill" onclick="switchDoc('doc-1')">doc-1 (Collaboration)</span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;">
+        <div style="flex:1;">
+          <label>Active User</label>
+          <div style="font-size:0.8rem;font-weight:700;color:var(--accent);" id="active-user-display">alice (author)</div>
+        </div>
+        <div>
+          <label>Lamport Clock</label>
+          <div style="font-size:0.8rem;font-weight:700;color:var(--muted);">L = <span id="lamport-val" style="color:var(--accent);">1</span></div>
+        </div>
+      </div>
+
+      <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+        <!-- Author highlight panel for editor revision notes -->
+        <div id="author-revision-notes-panel" style="display:none;background:rgba(245,158,11,0.12);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:6px;">
+          <div style="font-size:0.72rem;font-weight:700;color:var(--amber);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            <span>⚠️</span> <span>Editor Revision Request &amp; Notes</span>
+          </div>
+          <div id="author-revision-notes-content" style="font-size:0.75rem;color:var(--text);white-space:pre-wrap;line-height:1.4;"></div>
+        </div>
+
+        <label>Manuscript / Editor Text</label>
+        <textarea id="editor" placeholder="Type manuscript text here..."></textarea>
+      </div>
+
+      <!-- Action Panel with Tooltips / Role restrictions -->
+      <div>
+        <label id="actions-group-label">Workflow Actions (Role Enforced)</label>
+
+        <!-- Editor Panel: Reviewer Recommendations Summary & Decisions -->
+        <div id="editor-decision-panel" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="font-size:0.72rem;font-weight:700;color:var(--purple);text-transform:uppercase;letter-spacing:0.04em;">
+              📋 Reviewer Recommendations Summary
+            </div>
+            <button type="button" id="btn-compile-revision" class="secondary" style="padding:2px 8px;font-size:0.7rem;" title="Compile reviewer feedback into revision request notes">
+              ✨ Compile revision request
+            </button>
+          </div>
+          <div id="reviewer-summary-list" style="font-size:0.75rem;margin-bottom:8px;line-height:1.4;">
+            No reviewers assigned for this round.
+          </div>
+          <div style="margin-bottom:8px;">
+            <label style="font-size:0.7rem;color:var(--muted);margin-bottom:2px;">Revision Request Notes (Sent to Author):</label>
+            <textarea id="editor-revision-notes" rows="3" style="font-size:0.75rem;width:100%;box-sizing:border-box;" placeholder="Click 'Compile revision request' or type instructions for author..."></textarea>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;background:rgba(0,0,0,0.2);padding:6px 8px;border-radius:5px;">
+            <input type="checkbox" id="chk-override" style="width:auto;cursor:pointer;" />
+            <label for="chk-override" style="margin:0;font-size:0.72rem;cursor:pointer;color:var(--amber);font-weight:600;">
+              Override: decide without all reviews
+            </label>
+          </div>
+        </div>
+
+        <div class="button-group">
+          <!-- Author Actions -->
+          <button id="btn-checkpoint" class="secondary" title="Save draft checkpoint (Author only)">💾 Save Checkpoint</button>
+          <button id="btn-submit" class="primary" title="Submit manuscript for review (Author only in DRAFT)">🚀 Submit Manuscript</button>
+          <button id="btn-submit-rev" class="primary" style="display:none;" title="Submit revised manuscript (Author only in REVISION_REQUESTED)">📝 Submit Revision (R2)</button>
+
+          <!-- Editor Actions -->
+          <button id="btn-assign-reviewers" class="purple" style="display:none;" title="Assign reviewers (Editor only in SUBMITTED/REVISED)">👥 Assign Reviewers</button>
+          <button id="btn-decision-desk-reject" class="danger" style="display:none;" title="Desk-reject manuscript before review (Editor only in SUBMITTED)">🚫 Desk-Reject</button>
+          <button id="btn-req-revision" class="warn" style="display:none;" title="Request author revision (Editor Decision)">⚠️ Request Revision</button>
+          <button id="btn-decision-accept" class="success" style="display:none;" title="Accept manuscript (Editor Decision)">✅ Accept Manuscript</button>
+          <button id="btn-decision-reject" class="danger" style="display:none;" title="Reject manuscript (Editor Decision)">❌ Reject</button>
+          <button id="btn-publish" class="success" style="display:none;" title="Publish manuscript permanently (Editor only in ACCEPTED)">🎉 Publish</button>
+
+          <!-- Reviewer Action -->
+          <button id="btn-add-review" class="secondary" style="display:none;" title="Submit peer review recommendation (Assigned Reviewer only)">✍️ Submit Recommendation</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ────────────── MIDDLE: Timeline & Reviews ────────── -->
+  <div class="col">
+    <div class="col-header">
+      <div class="tab-nav" style="border:none;margin:0;">
+        <button class="tab-btn active" id="tab-timeline-btn" onclick="showMidTab('timeline')">Version Timeline</button>
+        <button class="tab-btn" id="tab-reviews-btn" onclick="showMidTab('reviews')">Reviews &amp; Decisions</button>
+      </div>
+      <span id="timeline-count-badge" class="badge">0 ver</span>
+    </div>
+    <div class="col-body">
+
+      <!-- Timeline Tab -->
+      <div id="tab-timeline" style="display:flex;flex-direction:column;gap:10px;">
+        <!-- Stats Card -->
+        <div class="stats-card">
+          <h4>📊 Storage Efficiency (Snapshots vs Deltas)</h4>
+          <div class="stats-row"><span>Total versions</span><span class="stats-val" id="stat-total">—</span></div>
+          <div class="stats-row"><span>Snapshots / Deltas</span><span class="stats-val" id="stat-sd">—</span></div>
+          <div class="stats-row"><span>Stored bytes</span><span class="stats-val" id="stat-stored">—</span></div>
+          <div class="stats-row"><span>Full copy equivalent</span><span class="stats-val" id="stat-full">—</span></div>
+          <div class="stats-row"><span>Storage saved</span><span class="stats-val" id="stat-saved">—</span></div>
+          <div class="savings-bar"><div class="savings-fill" id="savings-fill" style="width:0%"></div></div>
+        </div>
+
+        <!-- Pagination -->
+        <div class="pagination">
+          <button id="btn-prev-ver" class="secondary">← Prev</button>
+          <span class="page-info" id="ver-page-info">page 1</span>
+          <button id="btn-next-ver" class="secondary">Next →</button>
+        </div>
+
+        <!-- Version List -->
+        <ul class="version-list" id="version-list">
+          <li style="color:var(--muted);font-size:0.8rem;">Loading versions...</li>
+        </ul>
+      </div>
+
+      <!-- Reviews Tab -->
+      <div id="tab-reviews" style="display:none;flex-direction:column;gap:10px;">
+        <div id="reviews-container">
+          <div style="color:var(--muted);font-size:0.8rem;">No reviews submitted yet.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ────────────── RIGHT: Preview & E3 Diff Compare ──── -->
+  <div class="col">
+    <div class="col-header">
+      <div class="tab-nav" style="border:none;margin:0;">
+        <button class="tab-btn active" id="tab-prev-btn" onclick="showRightTab('preview')">Preview &amp; Restore</button>
+        <button class="tab-btn" id="tab-comp-btn" onclick="showRightTab('compare')">Compare (Mocked E3 Diff)</button>
+      </div>
+      <span id="rebuild-status-tag" class="badge">FR2.4</span>
+    </div>
+    <div class="col-body">
+
+      <!-- Preview Tab -->
+      <div id="tab-preview" style="display:flex;flex-direction:column;gap:10px;">
+        <div id="no-selection" style="color:var(--muted);font-size:0.8rem;">
+          Click any version in the timeline to rebuild and verify its SHA-256 hash.
+        </div>
+
+        <div id="preview-panel" style="display:none;flex-direction:column;gap:10px;">
+          <div>
+            <label>Rebuilt Text — v<span id="prev-ver-no">?</span></label>
+            <div class="preview-box" id="preview-text"></div>
+          </div>
+
+          <div class="trace-box" id="rebuild-trace">—</div>
+
+          <div class="hash-status" id="hash-status">—</div>
+
+          <button id="btn-restore" class="primary">♻️ Restore This Version</button>
+          <div style="font-size:0.7rem;color:var(--muted);">
+            * Restoring saves a safety checkpoint first, then appends a NEW version.
+          </div>
+        </div>
+      </div>
+
+      <!-- Compare Tab -->
+      <div id="tab-compare" style="display:none;flex-direction:column;gap:10px;">
+        <div style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <label>Version A (Base)</label>
+            <input type="number" id="cmp-ver-a" min="1" value="1" />
+          </div>
+          <div style="flex:1;">
+            <label>Version B (Target)</label>
+            <input type="number" id="cmp-ver-b" min="1" value="2" />
+          </div>
+          <div style="align-self:flex-end;">
+            <button id="btn-run-compare" class="primary">Compare</button>
+          </div>
+        </div>
+
+        <div style="font-size:0.72rem;color:var(--muted);display:flex;justify-content:space-between;">
+          <span>Engine: <b style="color:var(--accent);">Mocked E3 Diff (difflib)</b></span>
+          <span>Green = Added · Red = Deleted</span>
+        </div>
+
+        <div class="diff-container" id="diff-output">
+          Select two versions and click Compare.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- end .columns -->
+
+<!-- ═══════════════════════════════════════════════════════ Bottom -->
+<div class="bottom">
+
+  <!-- Audit Log -->
+  <div class="bottom-panel">
+    <h3>📋 Audit Trail (FR4.6)</h3>
+    <div class="pagination" style="margin-bottom:6px;">
+      <button id="btn-prev-aud" class="secondary">←</button>
+      <span class="page-info" id="aud-page-info">p1</span>
+      <button id="btn-next-aud" class="secondary">→</button>
+    </div>
+    <ul class="audit-list" id="audit-list">
+      <li style="color:var(--muted);font-size:0.72rem;">No audit logs yet.</li>
+    </ul>
+  </div>
+
+  <!-- Demo Controls -->
+  <div class="demo-controls">
+    <h3>🛠 Demo Controls &amp; Invariants</h3>
+
+    <button id="btn-fail" class="warn">⚠️ Simulate DB Failure on Next Write</button>
+    <button id="btn-corrupt" class="danger">💀 Corrupt Selected Version</button>
+    <button id="btn-reset" class="danger">🗑 Reset Manuscript</button>
+
+    <div style="display:flex;gap:6px;align-items:center;font-size:0.75rem;">
+      <label style="margin:0;">Snapshot Cadence N:</label>
+      <input type="number" id="cfg-snapshot-every" min="1" max="50" value="5" style="width:55px;" />
+      <button id="btn-cfg" class="secondary">Apply</button>
+    </div>
+
+    <div id="fail-indicator" style="display:none;color:var(--amber);font-size:0.75rem;font-weight:700;width:100%;">
+      ⚠️ Failure flag is SET — next write will rollback atomically!
+    </div>
+  </div>
+
+</div>
+
+<!-- Review Modal -->
+<div class="modal-backdrop" id="review-modal">
+  <div class="modal-box">
+    <h3 style="font-size:0.9rem;color:var(--teal);">✍️ Submit Peer Review Recommendation</h3>
+    <div style="font-size:0.72rem;color:var(--muted);">
+      As a reviewer, you submit a recommendation (accept / minor / major / reject) with feedback. The Editor issues official decisions.
+    </div>
+    <div>
+      <label>Version Under Review</label>
+      <input type="number" id="modal-ver-no" readonly />
+    </div>
+    <div>
+      <label>Recommendation</label>
+      <select id="modal-rec">
+        <option value="accept">Accept</option>
+        <option value="minor">Minor Revision</option>
+        <option value="major">Major Revision</option>
+        <option value="reject">Reject</option>
+      </select>
+    </div>
+    <div>
+      <label>Review Comments</label>
+      <textarea id="modal-comments" rows="3" placeholder="Enter detailed peer review remarks..."></textarea>
+    </div>
+    <div>
+      <label>Requested Changes (Specific bullet items)</label>
+      <div id="modal-req-changes-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;max-height:110px;overflow-y:auto;"></div>
+      <div style="display:flex;gap:6px;">
+        <input type="text" id="modal-req-change-input" placeholder="e.g. Clarify Section 3 benchmarks..." style="flex:1;font-size:0.75rem;" onkeydown="if(event.key==='Enter'){event.preventDefault();addModalReqChange();}" />
+        <button type="button" class="secondary" style="padding:4px 10px;font-size:0.75rem;" onclick="addModalReqChange()">+ Add</button>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px;">
+      <button class="secondary" onclick="closeReviewModal()">Cancel</button>
+      <button class="primary" onclick="submitReviewModal()">Submit Recommendation</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-area"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   VersionVault Demo UI – Journal & Manuscript Workflow
+══════════════════════════════════════════════════════════════════ */
+
+let currentUser = "alice";
+let currentRole = "author";
+let clientLamport = 1;
+let verPage = 1;
+let audPage = 1;
+let selectedVersion = null;
+let currentWorkflow = null;
+
+function setText(el, str) {
+  if (el) el.textContent = String(str ?? '');
+}
+
+function toast(msg, type = 'info', duration = 4000) {
+  const area = document.getElementById('toast-area');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  setText(t, msg);
+  area.appendChild(t);
+  setTimeout(() => t.remove(), duration);
+}
+
+async function api(url, options = {}) {
+  options.headers = options.headers || {};
+  options.headers['X-User-Id'] = currentUser;
+  options.headers['X-Role'] = currentRole;
+
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === 'object' ? (detail.error || detail.reason || JSON.stringify(detail)) : (detail || res.statusText);
+    toast('Error: ' + msg, 'error', 6000);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+// ── Role Switcher ────────────────────────────────────────────────
+document.querySelectorAll('.role-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.role-btn').forEach(b => b.className = 'role-btn');
+    currentUser = btn.dataset.user;
+    currentRole = btn.dataset.role;
+
+    btn.className = `role-btn active ${currentRole}-role`;
+    setText(document.getElementById('active-user-display'), `${currentUser} (${currentRole})`);
+    toast(`Switched to ${currentUser} (${currentRole})`, 'info', 2500);
+
+    refreshAll();
+  });
+});
+
+// ── Switch Document ──────────────────────────────────────────────
+function switchDoc(id) {
+  document.getElementById('doc-id').value = id;
+  verPage = 1; audPage = 1; selectedVersion = null;
+  refreshAll();
+}
+
+document.getElementById('doc-id').addEventListener('change', () => {
+  verPage = 1; audPage = 1; selectedVersion = null;
+  refreshAll();
+});
+
+// ── Tabs ─────────────────────────────────────────────────────────
+function showMidTab(tab) {
+  document.getElementById('tab-timeline').style.display = tab === 'timeline' ? 'flex' : 'none';
+  document.getElementById('tab-reviews').style.display = tab === 'reviews' ? 'flex' : 'none';
+  document.getElementById('tab-timeline-btn').className = 'tab-btn' + (tab === 'timeline' ? ' active' : '');
+  document.getElementById('tab-reviews-btn').className = 'tab-btn' + (tab === 'reviews' ? ' active' : '');
+}
+
+function showRightTab(tab) {
+  document.getElementById('tab-preview').style.display = tab === 'preview' ? 'flex' : 'none';
+  document.getElementById('tab-compare').style.display = tab === 'compare' ? 'flex' : 'none';
+  document.getElementById('tab-prev-btn').className = 'tab-btn' + (tab === 'preview' ? ' active' : '');
+  document.getElementById('tab-comp-btn').className = 'tab-btn' + (tab === 'compare' ? ' active' : '');
+}
+
+// ── Load Workflow & Stepper ──────────────────────────────────────
+async function loadWorkflow() {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!docId) return;
+
+  try {
+    const data = await api(`/manuscripts/${encodeURIComponent(docId)}/workflow?userId=${encodeURIComponent(currentUser)}&role=${encodeURIComponent(currentRole)}`);
+    if (currentRole === 'editor' && data.manuscript) {
+      try {
+        const sumData = await api(`/manuscripts/${encodeURIComponent(docId)}/review-summary?round=${data.manuscript.current_round}`);
+        data.reviewer_summary = sumData.summary || sumData.reviewers || data.reviewer_summary;
+      } catch (_) {}
+    }
+    currentWorkflow = data;
+    renderWorkflow(data);
+  } catch (_) {}
+}
+
+function renderWorkflow(wf) {
+  const m = wf.manuscript;
+  const statusBadge = document.getElementById('manuscript-status-badge');
+  const lockBanner = document.getElementById('lock-banner');
+
+  // ALWAYS render reviews and decisions from current backend state
+  renderReviewsList(wf.reviews || [], wf.decisions || []);
+
+  const revNotesPanel = document.getElementById('author-revision-notes-panel');
+  const revNotesContent = document.getElementById('author-revision-notes-content');
+  const revNotes = wf.revision_notes || wf.current_revision_notes || (m ? m.revision_notes : null);
+  if (currentRole === 'author' && m && m.status === 'REVISION_REQUESTED' && revNotes) {
+    if (revNotesPanel) revNotesPanel.style.display = 'block';
+    if (revNotesContent) setText(revNotesContent, revNotes);
+  } else {
+    if (revNotesPanel) revNotesPanel.style.display = 'none';
+  }
+
+  if (!m) {
+    setText(statusBadge, 'DRAFT');
+    statusBadge.className = 'badge draft';
+    lockBanner.style.display = 'none';
+    updateActionButtons('DRAFT', wf.allowed_actions || ['checkpoint', 'submit'], wf.reviewer_summary || []);
+    renderStepper('DRAFT', 0);
+    return;
+  }
+
+  setText(statusBadge, m.status);
+  statusBadge.className = `badge ${m.status.toLowerCase()}`;
+  lockBanner.style.display = m.status === 'PUBLISHED' ? 'block' : 'none';
+
+  renderStepper(m.status, m.current_round);
+  updateActionButtons(m.status, wf.allowed_actions || [], wf.reviewer_summary || []);
+}
+
+function renderStepper(status, round) {
+  const steps = [
+    { key: 'DRAFT', label: '1. DRAFT' },
+    { key: 'SUBMITTED', label: '2. SUBMITTED' },
+    { key: 'UNDER_REVIEW_1', label: '3. UNDER REVIEW (R1)' },
+    { key: 'REVISION_REQUESTED', label: '4. REVISION REQUESTED' },
+    { key: 'REVISED', label: '5. REVISED (R2)' },
+    { key: 'UNDER_REVIEW_2', label: '6. UNDER REVIEW (R2)' },
+    { key: 'ACCEPTED', label: '7. ACCEPTED' },
+    { key: 'PUBLISHED', label: '8. PUBLISHED' },
+  ];
+
+  let activeIdx = 0;
+  if (status === 'DRAFT') activeIdx = 0;
+  else if (status === 'SUBMITTED') activeIdx = 1;
+  else if (status === 'UNDER_REVIEW' && round === 1) activeIdx = 2;
+  else if (status === 'REVISION_REQUESTED') activeIdx = 3;
+  else if (status === 'REVISED') activeIdx = 4;
+  else if (status === 'UNDER_REVIEW' && round >= 2) activeIdx = 5;
+  else if (status === 'ACCEPTED') activeIdx = 6;
+  else if (status === 'PUBLISHED') activeIdx = 7;
+  else if (status === 'REJECTED') activeIdx = -1;
+
+  const bar = document.getElementById('stepper-bar');
+  bar.innerHTML = '';
+
+  steps.forEach((s, idx) => {
+    const el = document.createElement('div');
+    el.className = 'step-node';
+    if (status === 'REJECTED' && idx <= 2) {
+      el.className = 'step-node rejected';
+      setText(el, idx === 2 ? 'REJECTED' : s.label);
+    } else if (idx < activeIdx) {
+      el.className = 'step-node completed';
+      setText(el, '✓ ' + s.label.slice(3));
+    } else if (idx === activeIdx) {
+      el.className = 'step-node current';
+      setText(el, s.label);
+    } else {
+      setText(el, s.label);
+    }
+    bar.appendChild(el);
+
+    if (idx < steps.length - 1) {
+      const sep = document.createElement('span');
+      sep.className = 'step-sep';
+      sep.textContent = '→';
+      bar.appendChild(sep);
+    }
+  });
+}
+
+function updateActionButtons(status, allowed, reviewerSummary) {
+  const isAllowed = action => allowed.includes(action);
+
+  // Author buttons
+  const btnCheckpoint = document.getElementById('btn-checkpoint');
+  const btnSubmit = document.getElementById('btn-submit');
+  const btnSubmitRev = document.getElementById('btn-submit-rev');
+
+  // Editor buttons & panels
+  const editorDecisionPanel = document.getElementById('editor-decision-panel');
+  const reviewerSummaryList = document.getElementById('reviewer-summary-list');
+  const btnAssign = document.getElementById('btn-assign-reviewers');
+  const btnDeskReject = document.getElementById('btn-decision-desk-reject');
+  const btnReqRev = document.getElementById('btn-req-revision');
+  const btnAccept = document.getElementById('btn-decision-accept');
+  const btnReject = document.getElementById('btn-decision-reject');
+  const btnPub = document.getElementById('btn-publish');
+
+  // Reviewer button
+  const btnReview = document.getElementById('btn-add-review');
+  const btnRestore = document.getElementById('btn-restore');
+
+  // Reset visibility & disabled state
+  [btnSubmit, btnSubmitRev, btnAssign, btnDeskReject, btnReqRev, btnAccept, btnReject, btnPub, btnReview].forEach(b => b.style.display = 'none');
+
+  if (currentRole === 'author') {
+    editorDecisionPanel.style.display = 'none';
+    btnCheckpoint.disabled = !isAllowed('checkpoint') && status !== null;
+    btnRestore.disabled = !isAllowed('restore') && status !== null;
+
+    if (status === 'DRAFT' || status === null) {
+      btnSubmit.style.display = 'inline-flex';
+      btnSubmit.disabled = !isAllowed('submit') && status !== null;
+    }
+    if (status === 'REVISION_REQUESTED') {
+      btnSubmitRev.style.display = 'inline-flex';
+      btnSubmitRev.disabled = !isAllowed('submit_revision');
+    }
+  } else if (currentRole === 'editor') {
+    editorDecisionPanel.style.display = 'block';
+
+    // Render Reviewer Recommendations Summary
+    if (reviewerSummary && reviewerSummary.length) {
+      reviewerSummaryList.innerHTML = '';
+      reviewerSummary.forEach(item => {
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);';
+        const st = (item.status || 'pending').toLowerCase();
+        const badgeColor = st === 'submitted' ? (item.recommendation === 'accept' ? 'var(--green)' : item.recommendation === 'reject' ? 'var(--red)' : 'var(--amber)') : 'var(--muted)';
+        const badgeText = st === 'submitted' ? (item.recommendation ? item.recommendation.toUpperCase() : 'SUBMITTED') : 'PENDING';
+
+        let changesHtml = '';
+        if (item.requested_changes && item.requested_changes.length) {
+          changesHtml = `<div style="font-size:0.7rem;color:var(--text);margin-top:3px;"><b style="color:var(--amber);">Requested changes:</b><ul style="margin:2px 0 0 16px;padding:0;">${item.requested_changes.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul></div>`;
+        }
+        let commentsHtml = item.comments ? `<div style="font-size:0.7rem;color:var(--muted);font-style:italic;margin-top:2px;">"${escapeHtml(item.comments)}"</div>` : '';
+
+        div.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span><b>${escapeHtml(item.reviewer_id)}</b> (Round ${item.round_no})</span>
+            <span class="badge" style="background:${badgeColor};color:#000;">${badgeText}</span>
+          </div>
+          ${commentsHtml}
+          ${changesHtml}
+        `;
+        reviewerSummaryList.appendChild(div);
+      });
+    } else {
+      reviewerSummaryList.innerHTML = '<span style="color:var(--muted);font-style:italic;">No reviewers assigned for this round.</span>';
+    }
+
+    btnCheckpoint.disabled = true;
+    btnRestore.disabled = true;
+
+    if (status === 'SUBMITTED') {
+      btnAssign.style.display = 'inline-flex';
+      btnDeskReject.style.display = 'inline-flex';
+      btnAssign.disabled = !isAllowed('assign_reviewers');
+      btnDeskReject.disabled = false;
+    } else if (status === 'REVISED') {
+      btnAssign.style.display = 'inline-flex';
+      btnAssign.disabled = !isAllowed('assign_reviewers');
+    } else if (status === 'UNDER_REVIEW') {
+      btnReqRev.style.display = 'inline-flex';
+      btnAccept.style.display = 'inline-flex';
+      btnReject.style.display = 'inline-flex';
+      btnReqRev.disabled = !isAllowed('request_revision');
+      btnAccept.disabled = !isAllowed('decision_accept');
+      btnReject.disabled = !isAllowed('decision_reject');
+    } else if (status === 'ACCEPTED') {
+      btnPub.style.display = 'inline-flex';
+      btnPub.disabled = !isAllowed('publish');
+    }
+  } else if (currentRole === 'reviewer') {
+    editorDecisionPanel.style.display = 'none';
+    btnCheckpoint.disabled = true;
+    btnRestore.disabled = true;
+
+    if (status === 'UNDER_REVIEW') {
+      btnReview.style.display = 'inline-flex';
+      btnReview.disabled = !isAllowed('add_review');
+    }
+  }
+}
+
+// ── Render Reviews & Decisions ───────────────────────────────────
+function renderReviewsList(reviews, decisions) {
+  const container = document.getElementById('reviews-container');
+  container.innerHTML = '';
+
+  if ((!reviews || !reviews.length) && (!decisions || !decisions.length)) {
+    container.innerHTML = '<div style="color:var(--muted);font-size:0.8rem;">No reviews or decisions yet.</div>';
+    return;
+  }
+
+  // Decisions
+  decisions.forEach(d => {
+    const card = document.createElement('div');
+    card.className = 'review-card';
+    card.style.borderColor = d.decision === 'ACCEPT' ? 'var(--green)' : 'var(--red)';
+    let notesHtml = '';
+    if (d.revision_notes) {
+      notesHtml = `<div style="margin-top:6px;font-size:0.73rem;color:var(--amber);background:rgba(245,158,11,0.08);padding:6px 8px;border-radius:4px;white-space:pre-wrap;border-left:2px solid var(--amber);"><b>Revision Notes / Instructions:</b><br/>${escapeHtml(d.revision_notes)}</div>`;
+    }
+    card.innerHTML = `
+      <div class="review-header">
+        <span style="font-weight:700;color:${d.decision === 'ACCEPT' ? 'var(--green)' : 'var(--red)'};">
+          DECISION: ${escapeHtml(d.decision)} (Round ${d.round_no})
+        </span>
+        <span style="color:var(--muted);">${d.created_at ? d.created_at.slice(0,19).replace('T',' ') : ''}</span>
+      </div>
+      <div class="review-body">Issued by Editor: ${escapeHtml(d.editor_id)} for v${d.version_no}${notesHtml}</div>
+    `;
+    container.appendChild(card);
+  });
+
+  // Reviews
+  reviews.forEach(r => {
+    const card = document.createElement('div');
+    card.className = 'review-card';
+    const recColor = r.recommendation === 'accept' ? 'var(--green)' : r.recommendation === 'reject' ? 'var(--red)' : 'var(--amber)';
+    let rcHtml = '';
+    if (r.requested_changes && r.requested_changes.length) {
+      rcHtml = `<div style="margin-top:6px;font-size:0.72rem;"><b style="color:var(--amber);">Requested Changes:</b><ul style="margin:3px 0 0 16px;padding:0;">${r.requested_changes.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul></div>`;
+    }
+    card.innerHTML = `
+      <div class="review-header">
+        <span><b>${escapeHtml(r.reviewer_id)}</b> (Round ${r.round_no}, on v${r.version_no})</span>
+        <span class="badge" style="background:${recColor};color:#000;">${r.recommendation ? r.recommendation.toUpperCase() : 'REVIEW'}</span>
+      </div>
+      <div class="review-body">${escapeHtml(r.comments || '')}${rcHtml}</div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function escapeHtml(str) {
+  const p = document.createElement('p');
+  p.textContent = str;
+  return p.innerHTML;
+}
+
+// ── Load Version Timeline ────────────────────────────────────────
+async function loadVersions() {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!docId) return;
+
+  try {
+    const data = await api(`/versions?docId=${encodeURIComponent(docId)}&page=${verPage}`);
+    renderVersionList(data);
+  } catch (_) {}
+  loadStats();
+}
+
+function renderVersionList(data) {
+  const list = document.getElementById('version-list');
+  list.innerHTML = '';
+
+  setText(document.getElementById('timeline-count-badge'), `${data.total} versions`);
+  setText(document.getElementById('ver-page-info'), `page ${data.page} / ${data.total_pages}`);
+  document.getElementById('btn-prev-ver').disabled = data.page <= 1;
+  document.getElementById('btn-next-ver').disabled = data.page >= data.total_pages;
+
+  if (!data.items.length) {
+    list.innerHTML = '<li style="color:var(--muted);font-size:0.8rem;">No versions yet.</li>';
+    return;
+  }
+
+  data.items.forEach(v => {
+    const li = document.createElement('li');
+    li.className = 'version-item' + (v.version_no === selectedVersion ? ' selected' : '');
+    li.dataset.vno = v.version_no;
+
+    const numEl = document.createElement('div');
+    numEl.className = 'version-num';
+    setText(numEl, v.version_no);
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'version-meta';
+
+    const topEl = document.createElement('div');
+    topEl.className = 'version-meta-top';
+
+    // Badge
+    const badge = document.createElement('span');
+    let bClass = v.reason;
+    let bLabel = v.milestone || v.reason.toUpperCase();
+
+    if (v.reason === 'submission') bClass = 'submission';
+    else if (v.reason === 'revision') bClass = 'revision';
+    else if (v.reason === 'published') bClass = 'published';
+    else if (v.reason === 'safety') bClass = 'safety';
+    else if (v.reason === 'restore') bClass = 'restore';
+    else bClass = v.type;
+
+    badge.className = `badge ${bClass}`;
+    setText(badge, bLabel);
+
+    const roundTag = document.createElement('span');
+    roundTag.className = 'badge round-tag';
+    setText(roundTag, `R${v.round_no}`);
+
+    const authorEl = document.createElement('span');
+    authorEl.style.fontSize = '0.74rem';
+    authorEl.style.fontWeight = '600';
+    setText(authorEl, v.author_id);
+
+    const lEl = document.createElement('span');
+    lEl.style.cssText = 'font-size:0.7rem;color:var(--muted);';
+    setText(lEl, `L${v.lamport_ts}`);
+
+    topEl.append(badge, roundTag, authorEl, lEl);
+
+    const botEl = document.createElement('div');
+    botEl.className = 'version-meta-bot';
+    const parentStr = v.parent_ids.length ? `parent:[${v.parent_ids.join(',')}]` : 'root';
+    setText(botEl, `#${v.sha256_short} · ${v.size_bytes}B · ${parentStr} · ${v.type}`);
+
+    metaEl.append(topEl, botEl);
+    li.append(numEl, metaEl);
+
+    li.addEventListener('click', () => previewVersion(v.version_no));
+    list.appendChild(li);
+  });
+}
+
+// ── Preview Version ──────────────────────────────────────────────
+async function previewVersion(vno) {
+  const docId = document.getElementById('doc-id').value.trim();
+  selectedVersion = vno;
+
+  document.querySelectorAll('.version-item').forEach(el => {
+    el.classList.toggle('selected', parseInt(el.dataset.vno) === vno);
+  });
+
+  try {
+    const data = await api(`/versions/${encodeURIComponent(docId)}/${vno}?userId=${encodeURIComponent(currentUser)}&role=${encodeURIComponent(currentRole)}`);
+
+    document.getElementById('no-selection').style.display = 'none';
+    const panel = document.getElementById('preview-panel');
+    panel.style.display = 'flex';
+
+    setText(document.getElementById('prev-ver-no'), vno);
+    setText(document.getElementById('preview-text'), data.text);
+
+    const trace = document.getElementById('rebuild-trace');
+    if (data.deltas_replayed === 0) {
+      setText(trace, `📍 Rebuilt v${vno} directly from snapshot v${data.snapshot_used} (0 deltas replayed)`);
+    } else {
+      setText(trace, `🔄 Rebuilt v${vno} from snapshot v${data.snapshot_used} + ${data.deltas_replayed} delta(s)`);
+    }
+
+    const hs = document.getElementById('hash-status');
+    if (data.verified) {
+      hs.className = 'hash-status hash-ok';
+      setText(hs, '✅ SHA-256 verified — version integrity intact');
+    } else {
+      hs.className = 'hash-status hash-err';
+      setText(hs, '❌ SHA-256 MISMATCH — version CORRUPTED! ' + (data.error || ''));
+    }
+
+    // Set comparison targets
+    document.getElementById('cmp-ver-b').value = vno;
+    if (vno > 1) document.getElementById('cmp-ver-a').value = vno - 1;
+
+    loadAudit();
+  } catch (_) {}
+}
+
+// ── Compare Versions (Mocked E3 Diff) ────────────────────────────
+document.getElementById('btn-run-compare').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  const a = parseInt(document.getElementById('cmp-ver-a').value);
+  const b = parseInt(document.getElementById('cmp-ver-b').value);
+
+  if (!a || !b) { toast('Specify version A and B', 'error'); return; }
+
+  try {
+    const data = await api(`/manuscripts/${encodeURIComponent(docId)}/compare?a=${a}&b=${b}`);
+    const out = document.getElementById('diff-output');
+    out.innerHTML = '';
+
+    if (!data.diff_chunks || !data.diff_chunks.length) {
+      out.textContent = 'Identical versions (no diff).';
+      return;
+    }
+
+    data.diff_chunks.forEach(ch => {
+      if (ch.type === 'equal') {
+        out.appendChild(document.createTextNode(ch.text));
+      } else if (ch.type === 'insert') {
+        const ins = document.createElement('ins');
+        ins.textContent = ch.text;
+        out.appendChild(ins);
+      } else if (ch.type === 'delete') {
+        const del = document.createElement('del');
+        del.textContent = ch.text;
+        out.appendChild(del);
+      }
+    });
+
+    toast(`Compared v${a} with v${b} using ${data.engine}`, 'success');
+  } catch (_) {}
+});
+
+// ── Checkpoint Action ────────────────────────────────────────────
+document.getElementById('btn-checkpoint').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  const text  = document.getElementById('editor').value;
+
+  clientLamport++;
+  setText(document.getElementById('lamport-val'), clientLamport);
+
+  try {
+    const meta = await api('/checkpoint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ docId, userId: currentUser, role: currentRole, lamport: clientLamport, editCount: 1, text }),
+    });
+    toast(`💾 v${meta.version_no} saved (${meta.type}) — L${meta.lamport_ts}`, 'success');
+    clientLamport = meta.lamport_ts;
+    setText(document.getElementById('lamport-val'), clientLamport);
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Submit Manuscript Action ─────────────────────────────────────
+document.getElementById('btn-submit').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  const text  = document.getElementById('editor').value;
+
+  clientLamport++;
+  try {
+    const res = await api(`/manuscripts/${encodeURIComponent(docId)}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser, role: currentRole, lamport: clientLamport, text }),
+    });
+    toast(`🚀 Manuscript submitted! v${res.version.version_no} saved as snapshot milestone.`, 'success');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Submit Revision Action ───────────────────────────────────────
+document.getElementById('btn-submit-rev').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  const text  = document.getElementById('editor').value;
+
+  clientLamport++;
+  try {
+    const res = await api(`/manuscripts/${encodeURIComponent(docId)}/revisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser, role: currentRole, lamport: clientLamport, text }),
+    });
+    toast(`📝 Revision submitted! v${res.version.version_no} snapshot milestone created (Round ${res.round_no}).`, 'success');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Assign Reviewers Action ──────────────────────────────────────
+document.getElementById('btn-assign-reviewers').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  const reviewers = ["rita", "raj"];
+
+  try {
+    const res = await api(`/manuscripts/${encodeURIComponent(docId)}/assign-reviewers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: currentUser, role: currentRole, reviewerIds: reviewers }),
+    });
+    toast(`👥 Reviewers assigned: ${reviewers.join(', ')}. Status -> UNDER_REVIEW`, 'success');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Desk Reject Action (Editor at SUBMITTED) ─────────────────────
+document.getElementById('btn-decision-desk-reject').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!confirm("Desk-reject this manuscript before reviewer assignment?")) return;
+
+  try {
+    await api(`/manuscripts/${encodeURIComponent(docId)}/decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: currentUser, role: currentRole, decision: 'reject', override: true }),
+    });
+    toast(`🚫 Manuscript DESK-REJECTED.`, 'error');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Compile Revision Request (Editor) ────────────────────────────
+const btnCompile = document.getElementById('btn-compile-revision');
+if (btnCompile) {
+  btnCompile.addEventListener('click', async () => {
+    const docId = document.getElementById('doc-id').value.trim();
+    try {
+      const summaryData = await api(`/manuscripts/${encodeURIComponent(docId)}/review-summary`);
+      const reviewers = summaryData.summary || summaryData.reviewers || [];
+      const submitted = reviewers.filter(r => r.status === 'submitted');
+      if (!submitted.length) {
+        toast("No submitted reviews found for this round yet.", "info");
+        return;
+      }
+      const lines = [];
+      submitted.forEach(r => {
+        const rec = (r.recommendation || 'review').toLowerCase();
+        lines.push(`Reviewer ${r.reviewer_id} (${rec}):`);
+        if (r.requested_changes && r.requested_changes.length) {
+          r.requested_changes.forEach(c => lines.push(`- ${c}`));
+        }
+        if (r.comments) {
+          lines.push(`Comments: ${r.comments}`);
+        }
+        lines.push('');
+      });
+      const compiled = lines.join('\n').trim();
+      document.getElementById('editor-revision-notes').value = compiled;
+      toast("✨ Revision request pre-filled from reviewer feedback!", "success");
+    } catch (_) {}
+  });
+}
+
+// ── Request Revision Action ──────────────────────────────────────
+document.getElementById('btn-req-revision').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  const notesArea = document.getElementById('editor-revision-notes');
+  let remarks = notesArea ? notesArea.value.trim() : '';
+  if (!remarks) {
+    remarks = prompt("Enter revision instructions for the author:", "Please clarify section 3 and address reviewer comments.");
+    if (remarks === null) return;
+  }
+  const override = document.getElementById('chk-override').checked;
+
+  try {
+    await api(`/manuscripts/${encodeURIComponent(docId)}/request-revision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        editorId: currentUser,
+        role: currentRole,
+        comments: remarks,
+        revision_notes: remarks,
+        override,
+      }),
+    });
+    toast(`⚠️ Revision requested! Status -> REVISION_REQUESTED`, 'warn');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Accept Manuscript Action ─────────────────────────────────────
+document.getElementById('btn-decision-accept').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!confirm("Issue official ACCEPT decision for this manuscript?")) return;
+  const override = document.getElementById('chk-override').checked;
+
+  try {
+    await api(`/manuscripts/${encodeURIComponent(docId)}/decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: currentUser, role: currentRole, decision: 'accept', override }),
+    });
+    toast(`✅ Manuscript officially ACCEPTED!`, 'success');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Reject Manuscript Action ─────────────────────────────────────
+document.getElementById('btn-decision-reject').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!confirm("Issue official REJECT decision for this manuscript?")) return;
+  const override = document.getElementById('chk-override').checked;
+
+  try {
+    await api(`/manuscripts/${encodeURIComponent(docId)}/decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: currentUser, role: currentRole, decision: 'reject', override }),
+    });
+    toast(`❌ Manuscript REJECTED.`, 'error');
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Publish Action ───────────────────────────────────────────────
+document.getElementById('btn-publish').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!confirm("Publish this manuscript permanently? This will lock it against any further modifications.")) return;
+
+  try {
+    const res = await api(`/manuscripts/${encodeURIComponent(docId)}/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editorId: currentUser, role: currentRole, lamport: clientLamport }),
+    });
+    toast(`🎉 Manuscript PUBLISHED! Milestone snapshot v${res.version.version_no} created. Document locked.`, 'success', 8000);
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Peer Review Modal & Requested Changes ────────────────────────
+let modalRequestedChanges = [];
+
+function renderModalReqChanges() {
+  const container = document.getElementById('modal-req-changes-list');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!modalRequestedChanges.length) {
+    container.innerHTML = '<span style="color:var(--muted);font-size:0.7rem;font-style:italic;">No bullet items added.</span>';
+    return;
+  }
+  modalRequestedChanges.forEach((item, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,0.06);padding:3px 6px;border-radius:4px;font-size:0.75rem;';
+    row.innerHTML = `<span style="word-break:break-word;">• ${escapeHtml(item)}</span><button type="button" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:0.8rem;padding:0 4px;" onclick="removeModalReqChange(${idx})">✕</button>`;
+    container.appendChild(row);
+  });
+}
+
+function addModalReqChange() {
+  const inp = document.getElementById('modal-req-change-input');
+  if (!inp) return;
+  const val = inp.value.trim();
+  if (val) {
+    modalRequestedChanges.push(val);
+    inp.value = '';
+    renderModalReqChanges();
+  }
+}
+
+function removeModalReqChange(idx) {
+  modalRequestedChanges.splice(idx, 1);
+  renderModalReqChanges();
+}
+
+document.getElementById('btn-add-review').addEventListener('click', () => {
+  if (!selectedVersion) {
+    // default to latest version in list
+    const first = document.querySelector('.version-item');
+    if (first) selectedVersion = parseInt(first.dataset.vno);
+  }
+  document.getElementById('modal-ver-no').value = selectedVersion || 1;
+  modalRequestedChanges = [];
+  renderModalReqChanges();
+  document.getElementById('modal-comments').value = '';
+  document.getElementById('review-modal').style.display = 'flex';
+});
+
+function closeReviewModal() {
+  document.getElementById('review-modal').style.display = 'none';
+}
+
+async function submitReviewModal() {
+  const docId = document.getElementById('doc-id').value.trim();
+  const versionNo = parseInt(document.getElementById('modal-ver-no').value);
+  const recommendation = document.getElementById('modal-rec').value;
+  const comments = document.getElementById('modal-comments').value.trim();
+
+  if (!comments) { toast("Please provide review comments", "error"); return; }
+
+  try {
+    await api(`/manuscripts/${encodeURIComponent(docId)}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reviewerId: currentUser,
+        role: currentRole,
+        versionNo,
+        comments,
+        recommendation,
+        requested_changes: modalRequestedChanges,
+      }),
+    });
+    toast(`✍️ Review submitted with recommendation: ${recommendation.toUpperCase()}`, 'success');
+    closeReviewModal();
+    showMidTab('reviews');
+    refreshAll();
+  } catch (_) {}
+}
+
+// ── Restore Action ───────────────────────────────────────────────
+document.getElementById('btn-restore').addEventListener('click', async () => {
+  if (!selectedVersion) return;
+  const docId = document.getElementById('doc-id').value.trim();
+  const text  = document.getElementById('editor').value;
+
+  if (!confirm(`Restore v${selectedVersion}?\n\nThis will atomically save your current text as a SAFETY checkpoint, then append a NEW version pointing back to v${selectedVersion}.`)) return;
+
+  clientLamport++;
+  try {
+    const res = await api('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        docId,
+        userId: currentUser,
+        role: currentRole,
+        lamport: clientLamport,
+        versionNo: selectedVersion,
+        currentText: text,
+      }),
+    });
+    toast(`♻️ Safety checkpoint v${res.safety_version_no} saved. Restored as new v${res.restored_version_no}!`, 'success', 6000);
+    // update editor with restored content
+    const reb = await api(`/versions/${encodeURIComponent(docId)}/${res.restored_version_no}`);
+    document.getElementById('editor').value = reb.text;
+    refreshAll();
+  } catch (_) {}
+});
+
+// ── Stats, Audit & Config ────────────────────────────────────────
+async function loadStats() {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!docId) return;
+  try {
+    const s = await api(`/stats?docId=${encodeURIComponent(docId)}`);
+    setText(document.getElementById('stat-total'), s.total_versions);
+    setText(document.getElementById('stat-sd'), `${s.snapshots} / ${s.deltas}`);
+    setText(document.getElementById('stat-stored'), `${s.stored_bytes} B`);
+    setText(document.getElementById('stat-full'), `${s.full_text_bytes} B`);
+    let pct = 0;
+    if (s.full_text_bytes > 0) pct = Math.max(0, 100 * (1 - s.stored_bytes / s.full_text_bytes));
+    setText(document.getElementById('stat-saved'), `${pct.toFixed(1)}%`);
+    document.getElementById('savings-fill').style.width = pct.toFixed(1) + '%';
+  } catch (_) {}
+}
+
+async function loadAudit() {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!docId) return;
+  try {
+    const data = await api(`/audit?docId=${encodeURIComponent(docId)}&page=${audPage}&page_size=20`);
+    renderAudit(data);
+  } catch (_) {}
+}
+
+function renderAudit(data) {
+  const list = document.getElementById('audit-list');
+  list.innerHTML = '';
+
+  setText(document.getElementById('aud-page-info'), `p${data.page}/${data.total_pages} (${data.total})`);
+  document.getElementById('btn-prev-aud').disabled = data.page <= 1;
+  document.getElementById('btn-next-aud').disabled = data.page >= data.total_pages;
+
+  if (!data.items.length) {
+    list.innerHTML = '<li style="color:var(--muted);font-size:0.72rem;">No audit events yet.</li>';
+    return;
+  }
+
+  data.items.forEach(ev => {
+    const li = document.createElement('li');
+    li.className = 'audit-item';
+
+    const typeEl = document.createElement('span');
+    typeEl.className = 'audit-type';
+    setText(typeEl, ev.event_type);
+
+    const metaEl = document.createElement('span');
+    metaEl.className = 'audit-meta';
+    const vref = ev.version_ref != null ? `v${ev.version_ref}` : '';
+    setText(metaEl, `${ev.user_id} ${vref} ${ev.time ? ev.time.slice(0,19).replace('T',' ') : ''}`);
+
+    li.append(typeEl, metaEl);
+    list.appendChild(li);
+  });
+}
+
+document.getElementById('btn-prev-aud').addEventListener('click', () => { audPage--; loadAudit(); });
+document.getElementById('btn-next-aud').addEventListener('click', () => { audPage++; loadAudit(); });
+document.getElementById('btn-prev-ver').addEventListener('click', () => { verPage--; loadVersions(); });
+document.getElementById('btn-next-ver').addEventListener('click', () => { verPage++; loadVersions(); });
+
+// ── Demo Controls ────────────────────────────────────────────────
+document.getElementById('btn-fail').addEventListener('click', async () => {
+  try {
+    await api('/debug/fail-next-write', { method: 'POST' });
+    toast('⚠️ Failure flag SET — next write will rollback atomically!', 'info', 5000);
+    document.getElementById('fail-indicator').style.display = '';
+  } catch (_) {}
+});
+
+document.getElementById('btn-corrupt').addEventListener('click', async () => {
+  if (!selectedVersion) { toast('Select a version first.', 'error'); return; }
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!confirm(`Corrupt stored bytes of v${selectedVersion} to demonstrate SHA-256 detection?`)) return;
+
+  try {
+    await api(`/debug/corrupt/${encodeURIComponent(docId)}/${selectedVersion}`, { method: 'POST' });
+    toast(`💀 v${selectedVersion} corrupted! Check preview for hash mismatch.`, 'warn', 5000);
+    await previewVersion(selectedVersion);
+  } catch (_) {}
+});
+
+document.getElementById('btn-reset').addEventListener('click', async () => {
+  const docId = document.getElementById('doc-id').value.trim();
+  if (!confirm(`Reset ALL data for document "${docId}"?`)) return;
+
+  try {
+    await api(`/debug/reset?docId=${encodeURIComponent(docId)}`, { method: 'POST' });
+    toast(`🗑 Document "${docId}" reset.`, 'info');
+
+    // Clear preview and comparison panels
+    selectedVersion = null;
+    document.getElementById('preview-panel').style.display = 'none';
+    document.getElementById('no-selection').style.display = '';
+    setText(document.getElementById('preview-text'), '');
+    setText(document.getElementById('prev-ver-no'), '?');
+    setText(document.getElementById('rebuild-trace'), '—');
+    document.getElementById('diff-output').textContent = 'Select two versions and click Compare.';
+    document.getElementById('editor').value = '';
+
+    // Reset stepper and clear reviews panel immediately
+    renderStepper('DRAFT', 0);
+    renderReviewsList([], []);
+
+    // Re-fetch all data from backend
+    verPage = 1; audPage = 1;
+    await refreshAll();
+  } catch (_) {}
+});
+
+document.getElementById('btn-cfg').addEventListener('click', async () => {
+  const n = parseInt(document.getElementById('cfg-snapshot-every').value);
+  if (!n || n < 1) { toast('snapshotEvery must be >= 1', 'error'); return; }
+  try {
+    const data = await api('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotEvery: n }),
+    });
+    toast(`Config updated: snapshot every ${data.snapshot_every} versions`, 'success');
+  } catch (_) {}
+});
+
+const btnRefreshAll = document.getElementById('btn-refresh-all');
+if (btnRefreshAll) {
+  btnRefreshAll.addEventListener('click', () => {
+    toast("🔄 Refreshing all state...", "info", 1500);
+    refreshAll();
+  });
+}
+
+async function refreshAll() {
+  await loadWorkflow();
+  await loadVersions();
+  await loadAudit();
+}
+
+// ── Initial Bootstrap ────────────────────────────────────────────
+(async () => {
+  try {
+    const cfg = await api('/config');
+    document.getElementById('cfg-snapshot-every').value = cfg.snapshot_every;
+    document.getElementById('fail-indicator').style.display = cfg.simulate_failure ? '' : 'none';
+  } catch (_) {}
+
+  await refreshAll();
+
+  // If there's an active manuscript, prefill editor with latest version
+  const docId = document.getElementById('doc-id').value.trim();
+  try {
+    const vlist = await api(`/versions?docId=${encodeURIComponent(docId)}&page=1&page_size=1`);
+    if (vlist.items.length) {
+      const reb = await api(`/versions/${encodeURIComponent(docId)}/${vlist.items[0].version_no}`);
+      document.getElementById('editor').value = reb.text;
+    }
+  } catch (_) {}
+})();
+</script>
+</body>
+</html>
