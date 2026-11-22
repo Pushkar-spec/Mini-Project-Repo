@@ -38,7 +38,7 @@ e2_demo/
 ├── engine.py          # ALL core logic: snapshot/delta, rebuild, SHA-256, safety checkpoint,
 │                      #   restore, state machine, reviews, decisions, compare, audit
 ├── seed_demo.py       # Seeds manuscript-1 (8-step journey) and doc-1 (collaboration)
-├── test_engine.py     # 51 pytest tests covering all requirements & edge cases
+├── test_engine.py     # 77 pytest tests: requirements, edge cases and defect regressions (DEF-01…05)
 ├── static/
 │   └── index.html     # Single-page UI with Role Switcher, Stepper, Timeline, Reviews, Diff
 ├── requirements.txt
@@ -56,13 +56,15 @@ cd e2_demo
 pip install -r requirements.txt
 ```
 
-### 2. Run the Test Suite (51 Tests)
+### 2. Run the Test Suite (77 Tests)
 
 ```bash
 pytest test_engine.py -v
 ```
 
-All 51 tests should pass in under 10 seconds.
+All 77 tests should pass in under 10 seconds (47 test functions; one is parametrised over
+20 random strings and one over 2 failure points). `TestDefectRegressions` holds the retests
+for the Sprint 2 defect register (DEF-01 … DEF-05).
 
 ### 3. Seed Demo Data
 
@@ -79,6 +81,21 @@ This seeds:
 ```bash
 uvicorn main:app --reload
 ```
+
+The **Demo Controls** (simulate DB failure, corrupt version, reset, snapshot cadence) and
+`POST /audit` are **disabled by default** and return `403`. For the evaluator demo, start the
+server with demo mode on:
+
+```bash
+# Windows PowerShell
+$env:VV_DEMO_MODE="1"; uvicorn main:app --reload
+# Linux / macOS
+VV_DEMO_MODE=1 uvicorn main:app --reload
+```
+
+Only registered editors may use the editor role (default `eric`; change with
+`VV_EDITORS="eric,other"`). User identity is still **not authenticated** – real login
+belongs to the E4 engine.
 
 Open **http://127.0.0.1:8000** in your browser.
 Interactive API documentation is at **http://127.0.0.1:8000/docs**.
@@ -193,11 +210,12 @@ Interactive API documentation is at **http://127.0.0.1:8000/docs**.
 | `POST` | `/manuscripts/{id}/revisions` | Safety checkpoint → snapshot milestone → `REVISED` | Author |
 | `POST` | `/manuscripts/{id}/decision` | Issue `ACCEPT`, `REJECT`, or desk-reject (supports `override: bool`) | Editor |
 | `POST` | `/manuscripts/{id}/publish` | Create published snapshot & lock manuscript | Editor |
-| `GET` | `/manuscripts/{id}/compare` | difflib-based comparison between two versions | Any |
+| `GET` | `/manuscripts/{id}/compare` | difflib-based comparison between two versions | Author, Editor; Reviewer (milestones only) |
 | `GET` | `/manuscripts/{id}/workflow` | Current state, round, reviews, allowed actions | Any |
 | `POST` | `/checkpoint` | Save draft version (blocked if published) | Author |
-| `GET` | `/versions` | Paginated timeline (newest first) | Any |
+| `GET` | `/versions` | Paginated timeline (newest first) | Author, Editor; Reviewer sees milestones only |
 | `GET` | `/versions/{id}/{no}` | Rebuild version & verify SHA-256 | Author, Editor, Assigned Reviewer |
 | `POST` | `/restore` | Non-destructive restore with safety checkpoint | Author |
-| `GET` | `/audit` | Paginated audit trail | Any |
-| `GET/POST`| `/config` | Read or adjust snapshot cadence N | Any |
+| `GET` | `/audit` | Paginated audit trail | Author, Editor, Assigned Reviewer |
+| `GET`/`POST` | `/config` | Read (any) or adjust (demo mode only) snapshot cadence N | Any / `VV_DEMO_MODE=1` |
+| `POST` | `/debug/*`, `/audit` | Demo controls and manual audit entry | `VV_DEMO_MODE=1` only |

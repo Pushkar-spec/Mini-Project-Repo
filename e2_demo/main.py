@@ -191,6 +191,53 @@ def ensure_manuscript_exists(manuscript_id: str, user_id: str, role: str, db_pat
             raise HTTPException(status_code=404, detail="Manuscript not found - create it first")
 
 
+def authorize_read(doc_id: str, role: Optional[str], user_id: Optional[str]) -> bool:
+    """
+    DEF-03: one read rule for every route that returns version content or history.
+
+    - Bare documents (no manuscript row) stay readable, as before.
+    - For manuscripts the caller must send a known role; the role is checked with
+      require_role() (author must own it, editor must be registered, reviewer must
+      be assigned).
+    Returns True when the caller is a reviewer, meaning only milestone versions
+    (submission / revision / published) may be shown.
+    """
+    m = engine.get_manuscript(doc_id)
+    if not m:
+        return False
+    if not role or not user_id:
+        raise HTTPException(status_code=403, detail="X-Role and X-User-Id are required to read a manuscript")
+    try:
+        engine.require_role(doc_id, user_id, role, list(engine.KNOWN_ROLES))
+    except engine.RoleAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return role == "reviewer"
+
+
+def _is_milestone(doc_id: str, version_no: int) -> bool:
+    conn = engine.get_conn()
+    try:
+        row = conn.execute(
+            "SELECT reason FROM versions WHERE doc_id = ? AND version_no = ?",
+            (doc_id, version_no),
+        ).fetchone()
+    finally:
+        conn.close()
+    return bool(row and row["reason"] in ("submission", "revision", "published"))
+
+
+def require_demo_mode() -> None:
+    """
+    DEF-04: debug/config/manual-audit routes change shared state, so they only work
+    when the server is started with VV_DEMO_MODE=1 (evaluation demo).
+    """
+    if os.environ.get("VV_DEMO_MODE") != "1":
+        raise HTTPException(
+            status_code=403,
+            detail="Demo controls are disabled. Start the server with VV_DEMO_MODE=1 to enable them.",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Checkpoint & Restore (Existing E2 endpoints with role and lock checks)
 # ---------------------------------------------------------------------------
@@ -235,9 +282,19 @@ def versions(
     docId: str = Query(..., description="Document identifier"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    userId: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    x_role: Optional[str] = Header(None, alias="X-Role"),
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
 ) -> dict:
-    """FR2.5: Returns a paginated list of versions for *docId*, newest first."""
-    return engine.get_versions(doc_id=docId, page=page, page_size=page_size)
+    """
+    FR2.5: Returns a paginated list of versions for *docId*, newest first.
+    DEF-03: reviewers only see milestone versions of manuscripts they are assigned to.
+    """
+    milestones_only = authorize_read(docId, x_role or role, x_user_id or userId)
+    return engine.get_versions(
+        doc_id=docId, page=page, page_size=page_size, milestones_only=milestones_only
+    )
 
 
 @app.get("/versions/{docId}/{versionNo}", summary="Rebuild a specific version")
@@ -258,25 +315,9 @@ def get_version(
     eff_role = x_role or role
     eff_user = x_user_id or userId
 
-    m = engine.get_manuscript(docId)
-    if m and eff_role == "reviewer":
-        # Check reviewer assignment
-        try:
-            engine.require_role(docId, eff_user, "reviewer", ["reviewer"])
-        except engine.RoleAuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc))
-
-        # Check that this version is a submitted milestone version
-        conn = engine.get_conn()
-        try:
-            vrow = conn.execute(
-                "SELECT reason, milestone FROM versions WHERE doc_id = ? AND version_no = ?",
-                (docId, versionNo),
-            ).fetchone()
-        finally:
-            conn.close()
-
-        if not vrow or vrow["reason"] not in ("submission", "revision", "published"):
+    if authorize_read(docId, eff_role, eff_user):
+        # Reviewer: only submitted milestone versions
+        if not _is_milestone(docId, versionNo):
             raise HTTPException(
                 status_code=403,
                 detail=f"Reviewers can only view submitted milestone versions of manuscript '{docId}'. Version {versionNo} is not accessible.",
@@ -410,6 +451,8 @@ def submit_manuscript(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/manuscripts/{id}/assign-reviewers", summary="Assign reviewers to manuscript")
@@ -442,6 +485,8 @@ def assign_reviewers(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/manuscripts/{id}/reviews", summary="Submit a peer review")
@@ -487,6 +532,8 @@ def post_review(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/manuscripts/{id}/reviews", summary="Get reviews for manuscript")
@@ -514,7 +561,11 @@ def get_reviews(
     target_round = round if isinstance(round, int) else m["current_round"]
 
     if eff_role in ("editor", "author"):
-        pass  # allowed
+        # DEF-02: author must own the manuscript, editor must be registered
+        try:
+            engine.require_role(id, eff_user, eff_role, ["editor", "author"], db_path=db_path)
+        except engine.RoleAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
     elif eff_role == "reviewer":
         # Must be assigned to this manuscript
         try:
@@ -551,6 +602,8 @@ def get_review_summary_endpoint(
 
     if eff_role != "editor":
         raise HTTPException(status_code=403, detail="Editor role required to view review summary")
+    if eff_user not in engine.registered_editors():  # DEF-02
+        raise HTTPException(status_code=403, detail=f"User '{eff_user}' is not a registered editor")
 
     target_round = round if isinstance(round, int) else m["current_round"]
     summary = engine.get_review_summary(manuscript_id=id, round_no=target_round, db_path=db_path)
@@ -595,6 +648,8 @@ def request_revision(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/manuscripts/{id}/revisions", summary="Author submits revised manuscript")
@@ -629,6 +684,8 @@ def submit_revision(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/manuscripts/{id}/decision", summary="Editor issues Accept, Reject, or Desk-Reject decision")
@@ -662,6 +719,8 @@ def post_decision(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/manuscripts/{id}/publish", summary="Publish accepted manuscript")
@@ -685,6 +744,8 @@ def publish_manuscript(
             editor_id=user_id,
             lamport=req.lamport,
         )
+    except engine.IntegrityVerificationError as exc:  # DEF-01
+        raise HTTPException(status_code=409, detail=str(exc))
     except engine.DocumentLockedError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except engine.StatusTransitionError as exc:
@@ -693,6 +754,8 @@ def publish_manuscript(
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:  # failed write – whole transaction rolled back
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/manuscripts/{id}/compare", summary="Compare two versions (difflib)")
@@ -700,11 +763,22 @@ def compare(
     id: str,
     a: int = Query(..., description="Base version number"),
     b: int = Query(..., description="Target version number"),
+    userId: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    x_role: Optional[str] = Header(None, alias="X-Role"),
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
 ) -> dict:
     """
     compare: difflib-based version comparator labelled as mocked E3 diff.
     Returns unified diff lines and typed token chunks for visual diff rendering.
+    DEF-03: same read rule as GET /versions/{docId}/{versionNo}.
     """
+    if authorize_read(id, x_role or role, x_user_id or userId):
+        if not (_is_milestone(id, a) and _is_milestone(id, b)):
+            raise HTTPException(
+                status_code=403,
+                detail="Reviewers can only compare submitted milestone versions.",
+            )
     try:
         return engine.compare_versions(doc_id=id, ver_a=a, ver_b=b)
     except Exception as exc:
@@ -736,9 +810,10 @@ def get_workflow(
 # Audit, Stats & Config Endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/audit", summary="Append an audit log event")
+@app.post("/audit", summary="Append an audit log event (demo mode only)")
 def post_audit(req: AuditRequest) -> dict:
-    """FR4.6: Manually append an audit event."""
+    """FR4.6: Manually append an audit event. DEF-04: demo mode only."""
+    require_demo_mode()
     engine.add_audit(
         user_id=req.userId,
         doc_id=req.docId,
@@ -753,8 +828,13 @@ def get_audit(
     docId: str = Query(...),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    userId: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    x_role: Optional[str] = Header(None, alias="X-Role"),
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
 ) -> dict:
-    """FR4.6: Returns paginated audit log for *docId*, newest first."""
+    """FR4.6: Returns paginated audit log for *docId*, newest first (DEF-03 read rule)."""
+    authorize_read(docId, x_role or role, x_user_id or userId)
     return engine.get_audit(doc_id=docId, page=page, page_size=page_size)
 
 
@@ -775,7 +855,8 @@ def get_config() -> dict:
 
 @app.post("/config", summary="Update engine configuration")
 def set_config(req: ConfigRequest) -> dict:
-    """Update SNAPSHOT_EVERY cadence."""
+    """Update SNAPSHOT_EVERY cadence. DEF-04: demo mode only."""
+    require_demo_mode()
     if req.snapshotEvery < 1:
         raise HTTPException(status_code=400, detail="snapshotEvery must be >= 1")
     engine.SNAPSHOT_EVERY = req.snapshotEvery
@@ -788,14 +869,16 @@ def set_config(req: ConfigRequest) -> dict:
 
 @app.post("/debug/fail-next-write", summary="Simulate DB failure on next write")
 def fail_next_write() -> dict:
-    """Sets simulate-failure flag to prove atomic rollback."""
+    """Sets simulate-failure flag to prove atomic rollback. DEF-04: demo mode only."""
+    require_demo_mode()
     engine.set_simulate_failure(True)
     return {"simulate_failure": True}
 
 
 @app.post("/debug/corrupt/{docId}/{versionNo}", summary="Corrupt a stored version")
 def corrupt(docId: str, versionNo: int) -> dict:
-    """Flips the first character in content_or_delta to trigger SHA-256 mismatch."""
+    """Flips the first character in content_or_delta to trigger SHA-256 mismatch. Demo mode only."""
+    require_demo_mode()
     ok = engine.corrupt_version(doc_id=docId, version_no=versionNo)
     if not ok:
         raise HTTPException(status_code=404, detail="Version not found")
@@ -804,7 +887,8 @@ def corrupt(docId: str, versionNo: int) -> dict:
 
 @app.post("/debug/reset", summary="Reset all data for a document")
 def reset(docId: str = Query(...)) -> dict:
-    """Deletes all data for *docId* (demo only)."""
+    """Deletes all data for *docId* (demo only). DEF-04: demo mode only."""
+    require_demo_mode()
     engine.reset_document(doc_id=docId)
     return {"reset": True, "doc_id": docId}
 

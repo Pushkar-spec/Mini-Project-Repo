@@ -14,6 +14,7 @@ Requirement mapping:
 import difflib
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -76,12 +77,46 @@ class DocumentLockedError(Exception):
     pass
 
 
+class IntegrityVerificationError(Exception):
+    """Raised when a version fails SHA-256 verification and must not be used (DEF-01)."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Registered editors (DEF-02 stand-in until the E4 login engine exists)
+# ---------------------------------------------------------------------------
+# The editor role can no longer be claimed by any user through the X-Role header:
+# only user IDs listed here may act as editor. Override with VV_EDITORS="eric,ed2".
+# NOTE: user identity itself is still not authenticated – that is E4 (login) scope.
+
+KNOWN_ROLES = ("author", "editor", "reviewer")
+
+
+def registered_editors() -> set[str]:
+    raw = os.environ.get("VV_EDITORS", "eric")
+    return {u.strip() for u in raw.split(",") if u.strip()}
+
+
 def validate_status_transition(current_status: str, new_status: str) -> None:
     allowed = VALID_TRANSITIONS.get(current_status, [])
     if new_status not in allowed:
         raise StatusTransitionError(
             f"Illegal status transition from {current_status} to {new_status}. Allowed: {allowed}"
         )
+
+
+def _require_status_in_tx(conn: sqlite3.Connection, manuscript_id: str, new_status: str) -> None:
+    """
+    Re-read the status INSIDE the open write transaction and validate the move.
+    Because BEGIN IMMEDIATE holds the write lock, two parallel requests cannot both
+    pass this check (e.g. a double submit).
+    """
+    row = conn.execute(
+        "SELECT status FROM manuscripts WHERE manuscript_id = ?", (manuscript_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Manuscript '{manuscript_id}' not found")
+    validate_status_transition(row["status"], new_status)
 
 
 # ---------------------------------------------------------------------------
@@ -204,85 +239,109 @@ def save_version(
     conn = get_conn(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
-
-        last_lamport, last_version_no = _get_doc_state(conn, doc_id)
-
-        # FR2.6: Lamport clock advancement
-        new_ts = max(lamport, last_lamport) + 1
-        next_no = last_version_no + 1
-
-        # Milestone versions (submission, revision, published) are ALWAYS stored as snapshots
-        is_milestone = reason in ("submission", "revision", "published")
-        is_snapshot = is_milestone or force_snapshot or (next_no % SNAPSHOT_EVERY == 1)
-        ver_type = "snapshot" if is_snapshot else "delta"
-
-        if is_snapshot:
-            content_or_delta = text
-        else:
-            prev_text, _, _ = rebuild_version(doc_id, last_version_no, db_path=db_path, _conn=conn)
-            delta = make_delta(prev_text, text)
-            content_or_delta = json.dumps(delta, ensure_ascii=False, separators=(",", ":"))
-
-        sha = _sha256(text)
-
-        # Parent IDs
-        if parent_override is not None:
-            parent_ids = parent_override
-        elif next_no == 1:
-            parent_ids = []
-        else:
-            parent_ids = [last_version_no]
-
-        created_at = datetime.now(timezone.utc).isoformat()
-
-        conn.execute(
-            """INSERT INTO versions
-               (doc_id, version_no, type, content_or_delta, sha256,
-                author_id, lamport_ts, parent_ids, reason, round_no, milestone, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                doc_id, next_no, ver_type, content_or_delta, sha,
-                user_id, new_ts,
-                json.dumps(parent_ids),
-                reason, round_no, milestone, created_at,
-            ),
+        meta = _insert_version(
+            conn, doc_id, user_id, lamport, text, reason=reason,
+            parent_override=parent_override, round_no=round_no,
+            milestone=milestone, force_snapshot=force_snapshot, db_path=db_path,
         )
-
-        _update_doc_state(conn, doc_id, new_ts, next_no)
-
-        # Simulated failure: roll back to prove atomicity (FR2.2 demo)
-        with _sim_failure_lock:
-            global _simulate_failure
-            if _simulate_failure:
-                _simulate_failure = False  # one-shot
-                raise RuntimeError(
-                    "Simulated DB failure: rolling back transaction to prove atomicity."
-                )
-
         conn.commit()
-
-        # Audit log for standard checkpoint
-        if reason == "checkpoint":
-            add_audit(user_id, doc_id, "checkpoint_created", next_no, db_path=db_path)
-
-        return {
-            "doc_id": doc_id,
-            "version_no": next_no,
-            "type": ver_type,
-            "sha256": sha,
-            "author_id": user_id,
-            "lamport_ts": new_ts,
-            "parent_ids": parent_ids,
-            "reason": reason,
-            "round_no": round_no,
-            "milestone": milestone,
-            "created_at": created_at,
-        }
     except Exception:
         conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()
+
+    # Audit log for standard checkpoint
+    if reason == "checkpoint":
+        add_audit(user_id, doc_id, "checkpoint_created", meta["version_no"], db_path=db_path)
+    return meta
+
+
+def _insert_version(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    user_id: str,
+    lamport: int,
+    text: str,
+    reason: str = "checkpoint",
+    parent_override: Optional[list[int]] = None,
+    round_no: int = 1,
+    milestone: Optional[str] = None,
+    force_snapshot: bool = False,
+    db_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Insert one version row using an ALREADY OPEN transaction on *conn*.
+    Does not commit – the caller commits or rolls back, so several inserts and a
+    status update can be one atomic unit (DEF-05).
+    """
+    last_lamport, last_version_no = _get_doc_state(conn, doc_id)
+
+    # FR2.6: Lamport clock advancement
+    new_ts = max(lamport, last_lamport) + 1
+    next_no = last_version_no + 1
+
+    # Milestone versions (submission, revision, published) are ALWAYS stored as snapshots
+    is_milestone = reason in ("submission", "revision", "published")
+    is_snapshot = is_milestone or force_snapshot or (next_no % SNAPSHOT_EVERY == 1)
+    ver_type = "snapshot" if is_snapshot else "delta"
+
+    if is_snapshot:
+        content_or_delta = text
+    else:
+        prev_text, _, _ = rebuild_version(doc_id, last_version_no, db_path=db_path, _conn=conn)
+        delta = make_delta(prev_text, text)
+        content_or_delta = json.dumps(delta, ensure_ascii=False, separators=(",", ":"))
+
+    sha = _sha256(text)
+
+    # Parent IDs
+    if parent_override is not None:
+        parent_ids = parent_override
+    elif next_no == 1:
+        parent_ids = []
+    else:
+        parent_ids = [last_version_no]
+
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        """INSERT INTO versions
+           (doc_id, version_no, type, content_or_delta, sha256,
+            author_id, lamport_ts, parent_ids, reason, round_no, milestone, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            doc_id, next_no, ver_type, content_or_delta, sha,
+            user_id, new_ts,
+            json.dumps(parent_ids),
+            reason, round_no, milestone, created_at,
+        ),
+    )
+
+    _update_doc_state(conn, doc_id, new_ts, next_no)
+
+    # Simulated failure: roll back to prove atomicity (FR2.2 demo)
+    with _sim_failure_lock:
+        global _simulate_failure
+        if _simulate_failure:
+            _simulate_failure = False  # one-shot
+            raise RuntimeError(
+                "Simulated DB failure: rolling back transaction to prove atomicity."
+            )
+
+    return {
+        "doc_id": doc_id,
+        "version_no": next_no,
+        "type": ver_type,
+        "sha256": sha,
+        "author_id": user_id,
+        "lamport_ts": new_ts,
+        "parent_ids": parent_ids,
+        "reason": reason,
+        "round_no": round_no,
+        "milestone": milestone,
+        "created_at": created_at,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -480,12 +539,20 @@ def get_versions(
     page: int = 1,
     page_size: int = 10,
     db_path: Optional[str] = None,
+    milestones_only: bool = False,
 ) -> dict[str, Any]:
-    """FR2.5 – Return a paginated, newest-first list of versions for *doc_id*."""
+    """
+    FR2.5 – Return a paginated, newest-first list of versions for *doc_id*.
+    milestones_only=True returns only submission/revision/published versions
+    (used for reviewers – DEF-03).
+    """
+    where = "doc_id = ?"
+    if milestones_only:
+        where += " AND reason IN ('submission','revision','published')"
     conn = get_conn(db_path)
     try:
         total = conn.execute(
-            "SELECT COUNT(*) FROM versions WHERE doc_id = ?", (doc_id,)
+            f"SELECT COUNT(*) FROM versions WHERE {where}", (doc_id,)
         ).fetchone()[0]
 
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -496,7 +563,7 @@ def get_versions(
                       round_no, milestone, parent_ids, created_at,
                       LENGTH(content_or_delta) AS size_bytes
                FROM versions
-               WHERE doc_id = ?
+               WHERE """ + where + """
                ORDER BY version_no DESC
                LIMIT ? OFFSET ?""",
             (doc_id, page_size, offset),
@@ -663,7 +730,15 @@ def require_role(
     """
     Validate user role and manuscript-level authorization (stand-in for E4).
     If manuscript does not exist, role check is skipped (backwards-compatible with bare docs).
+
+    DEF-02: the editor role is only accepted for registered editors, so a client can
+    no longer become editor just by sending X-Role: editor.
     """
+    if role not in KNOWN_ROLES:
+        raise RoleAuthorizationError(f"Unknown role '{role}'. Allowed: {list(KNOWN_ROLES)}")
+    if role == "editor" and user_id not in registered_editors():
+        raise RoleAuthorizationError(f"User '{user_id}' is not a registered editor")
+
     m = get_manuscript(manuscript_id, db_path=db_path)
     if not m:
         return
@@ -757,37 +832,30 @@ def submit_manuscript(
         raise ValueError(f"Manuscript '{manuscript_id}' not found")
     validate_status_transition(m["status"], "SUBMITTED")
 
-    # Step 1: Safety checkpoint
-    pre_restore_checkpoint(
-        doc_id=manuscript_id,
-        user_id=author_id,
-        lamport=lamport,
-        current_text=text,
-        round_no=1,
-        db_path=db_path,
-    )
-
-    # Step 2: Milestone snapshot version
-    meta = save_version(
-        doc_id=manuscript_id,
-        user_id=author_id,
-        lamport=lamport,
-        text=text,
-        reason="submission",
-        round_no=1,
-        milestone="Initial Submission",
-        force_snapshot=True,
-        parent_override=[],
-        db_path=db_path,
-    )
-
+    # DEF-05: safety checkpoint, milestone snapshot and status change are ONE
+    # transaction. If any step fails, nothing is saved and status stays DRAFT.
     conn = get_conn(db_path)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_status_in_tx(conn, manuscript_id, "SUBMITTED")
+        # Step 1: Safety checkpoint
+        _insert_version(conn, manuscript_id, author_id, lamport, text,
+                        reason="safety", round_no=1, db_path=db_path)
+        # Step 2: Milestone snapshot version
+        meta = _insert_version(
+            conn, manuscript_id, author_id, lamport, text,
+            reason="submission", round_no=1, milestone="Initial Submission",
+            force_snapshot=True, parent_override=[], db_path=db_path,
+        )
+        # Step 3: Status change
         conn.execute(
             "UPDATE manuscripts SET status = 'SUBMITTED' WHERE manuscript_id = ?",
             (manuscript_id,),
         )
         conn.commit()
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 
@@ -1103,9 +1171,13 @@ def submit_revision(
     if not m:
         raise ValueError(f"Manuscript '{manuscript_id}' not found")
     validate_status_transition(m["status"], "REVISED")
+    new_round = m["current_round"] + 1
 
+    # DEF-05: all steps in ONE transaction (safety, milestone, status/round change).
     conn = get_conn(db_path)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_status_in_tx(conn, manuscript_id, "REVISED")
         # Find previous submitted version
         prev_row = conn.execute(
             """SELECT version_no FROM versions
@@ -1113,45 +1185,29 @@ def submit_revision(
                ORDER BY version_no DESC LIMIT 1""",
             (manuscript_id,),
         ).fetchone()
-        prev_sub_ver = prev_row["version_no"] if prev_row else None
-    finally:
-        conn.close()
+        parent_ids = [prev_row["version_no"]] if prev_row else []
 
-    parent_ids = [prev_sub_ver] if prev_sub_ver is not None else []
-    new_round = m["current_round"] + 1
+        # Step 1: Safety checkpoint
+        _insert_version(conn, manuscript_id, author_id, lamport, text,
+                        reason="safety", round_no=m["current_round"], db_path=db_path)
 
-    # Step 1: Safety checkpoint
-    pre_restore_checkpoint(
-        doc_id=manuscript_id,
-        user_id=author_id,
-        lamport=lamport,
-        current_text=text,
-        round_no=m["current_round"],
-        db_path=db_path,
-    )
+        # Step 2: Milestone snapshot version
+        meta = _insert_version(
+            conn, manuscript_id, author_id, lamport, text,
+            reason="revision", round_no=new_round,
+            milestone=f"Revision R{new_round - 1}",
+            force_snapshot=True, parent_override=parent_ids, db_path=db_path,
+        )
 
-    # Step 2: Milestone snapshot version
-    milestone_label = f"Revision R{new_round - 1}"
-    meta = save_version(
-        doc_id=manuscript_id,
-        user_id=author_id,
-        lamport=lamport,
-        text=text,
-        reason="revision",
-        round_no=new_round,
-        milestone=milestone_label,
-        force_snapshot=True,
-        parent_override=parent_ids,
-        db_path=db_path,
-    )
-
-    conn = get_conn(db_path)
-    try:
+        # Step 3: Status and round change
         conn.execute(
             "UPDATE manuscripts SET status = 'REVISED', current_round = ? WHERE manuscript_id = ?",
             (new_round, manuscript_id),
         )
         conn.commit()
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 
@@ -1248,40 +1304,40 @@ def publish_manuscript(
         raise ValueError(f"Manuscript '{manuscript_id}' not found")
     validate_status_transition(m["status"], "PUBLISHED")
 
-    # Rebuild latest version to obtain final published text
-    last_row = None
     conn = get_conn(db_path)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_status_in_tx(conn, manuscript_id, "PUBLISHED")
         row = conn.execute(
             "SELECT last_version_no FROM doc_state WHERE doc_id = ?", (manuscript_id,)
         ).fetchone()
         last_ver_no = row["last_version_no"] if row else 1
-    finally:
-        conn.close()
 
-    final_text, _, _ = rebuild_version(manuscript_id, last_ver_no, db_path=db_path)
+        # Rebuild latest version and VERIFY it before publishing (DEF-01).
+        final_text, verified, info = rebuild_version(
+            manuscript_id, last_ver_no, db_path=db_path, _conn=conn
+        )
+        if not verified:
+            raise IntegrityVerificationError(
+                f"Publish refused: v{last_ver_no} failed SHA-256 verification "
+                f"({info.get('error', 'hash mismatch')}). Restore a verified version first."
+            )
 
-    # Save milestone snapshot for Published Version
-    meta = save_version(
-        doc_id=manuscript_id,
-        user_id=editor_id,
-        lamport=lamport,
-        text=final_text,
-        reason="published",
-        round_no=m["current_round"],
-        milestone="Published Version",
-        force_snapshot=True,
-        parent_override=[last_ver_no],
-        db_path=db_path,
-    )
-
-    conn = get_conn(db_path)
-    try:
+        # Save milestone snapshot for Published Version, then lock (same transaction)
+        meta = _insert_version(
+            conn, manuscript_id, editor_id, lamport, final_text,
+            reason="published", round_no=m["current_round"],
+            milestone="Published Version", force_snapshot=True,
+            parent_override=[last_ver_no], db_path=db_path,
+        )
         conn.execute(
             "UPDATE manuscripts SET status = 'PUBLISHED' WHERE manuscript_id = ?",
             (manuscript_id,),
         )
         conn.commit()
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
 

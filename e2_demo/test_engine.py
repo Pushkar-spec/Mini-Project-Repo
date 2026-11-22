@@ -846,3 +846,179 @@ class TestManuscriptRoleSeparationAndReset:
         assert summary_by_id["raj"]["recommendation"] is None
         assert summary_by_id["raj"]["comments"] is None
         assert summary_by_id["raj"]["requested_changes"] == []
+
+
+# ---------------------------------------------------------------------------
+# Defect regression tests (Sprint 2 defect register DEF-01 … DEF-05)
+# Each test failed on the original code and must pass after the correction.
+# ---------------------------------------------------------------------------
+
+A = {"X-Role": "author", "X-User-Id": "alice"}
+E = {"X-Role": "editor", "X-User-Id": "eric"}
+R = {"X-Role": "reviewer", "X-User-Id": "rita"}
+
+
+@pytest.fixture
+def api(db, monkeypatch):
+    """FastAPI TestClient bound to the per-test temporary database."""
+    import db as db_module
+    import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(db_module, "DB_PATH", db)
+    monkeypatch.delenv("VV_DEMO_MODE", raising=False)
+    monkeypatch.delenv("VV_EDITORS", raising=False)
+    with TestClient(main.app) as client:
+        yield client
+
+
+def _accepted_manuscript(db, mid="ms-def"):
+    """Create a manuscript and drive it to ACCEPTED (engine level)."""
+    engine.create_manuscript(mid, "Defect Paper", "alice", initial_text="Draft one", db_path=db)
+    engine.save_version(mid, "alice", 2, "Draft two", db_path=db)
+    sub = engine.submit_manuscript(mid, "alice", 3, "Submitted text", db_path=db)
+    engine.assign_reviewers(mid, "eric", ["rita"], db_path=db)
+    engine.add_review(mid, "rita", sub["version"]["version_no"], 1, "Good", "accept", db_path=db)
+    engine.make_decision(mid, "eric", "accept", db_path=db)
+    return mid
+
+
+class TestDefectRegressions:
+
+    # ---- DEF-01: publish must verify SHA-256 first ---------------------------
+    def test_def01_publish_refused_when_latest_version_corrupted(self, db):
+        mid = _accepted_manuscript(db)
+        last = engine.get_versions(mid, db_path=db)["items"][0]["version_no"]
+        engine.corrupt_version(mid, last, db_path=db)
+        before = engine.get_versions(mid, db_path=db)["total"]
+
+        with pytest.raises(engine.IntegrityVerificationError):
+            engine.publish_manuscript(mid, "eric", lamport=9, db_path=db)
+
+        assert engine.get_manuscript(mid, db_path=db)["status"] == "ACCEPTED"
+        assert engine.get_versions(mid, db_path=db)["total"] == before
+
+    def test_def01_publish_api_returns_409_and_clean_publish_still_works(self, db, api):
+        mid = _accepted_manuscript(db, "ms-def01-api")
+        last = engine.get_versions(mid, db_path=db)["items"][0]["version_no"]
+        engine.corrupt_version(mid, last, db_path=db)
+        r = api.post(f"/manuscripts/{mid}/publish", headers=E, json={"editorId": "eric"})
+        assert r.status_code == 409
+        assert "SHA-256" in r.json()["detail"]
+
+        ok_mid = _accepted_manuscript(db, "ms-def01-ok")
+        r2 = api.post(f"/manuscripts/{ok_mid}/publish", headers=E, json={"editorId": "eric"})
+        assert r2.status_code == 200
+        pub_no = r2.json()["version"]["version_no"]
+        _, verified, _ = engine.rebuild_version(ok_mid, pub_no, db_path=db)
+        assert verified
+
+    # ---- DEF-02: editor role cannot be claimed by any user --------------------
+    def test_def02_unregistered_user_cannot_act_as_editor(self, db, api):
+        mid = "ms-def02"
+        engine.create_manuscript(mid, "Role Paper", "alice", initial_text="Draft", db_path=db)
+        engine.submit_manuscript(mid, "alice", 2, "Submitted", db_path=db)
+        engine.assign_reviewers(mid, "eric", ["rita"], db_path=db)
+        engine.add_review(mid, "rita", 3, 1, "ok", "accept", db_path=db)
+
+        fake = {"X-Role": "editor", "X-User-Id": "alice"}
+        r = api.post(f"/manuscripts/{mid}/decision", headers=fake,
+                     json={"editorId": "alice", "decision": "accept"})
+        assert r.status_code == 403
+        assert engine.get_manuscript(mid, db_path=db)["status"] == "UNDER_REVIEW"
+
+        r2 = api.post(f"/manuscripts/{mid}/decision", headers=E,
+                      json={"editorId": "eric", "decision": "accept"})
+        assert r2.status_code == 200
+
+    def test_def02_unknown_role_rejected(self, db):
+        engine.create_manuscript("ms-role-x", "X", "alice", initial_text="d", db_path=db)
+        with pytest.raises(engine.RoleAuthorizationError):
+            engine.require_role("ms-role-x", "mallory", "admin", ["admin"], db_path=db)
+
+    # ---- DEF-03: reviewers limited to milestones on every read route --------
+    def _under_review(self, db, mid):
+        engine.create_manuscript(mid, "Read Paper", "alice", initial_text="Secret draft one", db_path=db)
+        engine.save_version(mid, "alice", 2, "Secret draft two", db_path=db)
+        engine.submit_manuscript(mid, "alice", 3, "Submitted text", db_path=db)
+        engine.assign_reviewers(mid, "eric", ["rita"], db_path=db)
+
+    def test_def03_reviewer_cannot_compare_draft_versions(self, db, api):
+        mid = "ms-def03-cmp"
+        self._under_review(db, mid)
+        r = api.get(f"/manuscripts/{mid}/compare?a=1&b=2", headers=R)
+        assert r.status_code == 403
+        # author may still compare drafts
+        assert api.get(f"/manuscripts/{mid}/compare?a=1&b=2", headers=A).status_code == 200
+
+    def test_def03_reviewer_version_list_shows_only_milestones(self, db, api):
+        mid = "ms-def03-list"
+        self._under_review(db, mid)
+        r = api.get(f"/versions?docId={mid}", headers=R)
+        assert r.status_code == 200
+        reasons = {v["reason"] for v in r.json()["items"]}
+        assert reasons == {"submission"}
+        full = api.get(f"/versions?docId={mid}", headers=A).json()
+        assert full["total"] == 4  # draft, draft, safety, submission
+
+    def test_def03_read_without_identity_rejected(self, db, api):
+        mid = "ms-def03-anon"
+        self._under_review(db, mid)
+        assert api.get(f"/versions/{mid}/1").status_code == 403
+        assert api.get(f"/audit?docId={mid}").status_code == 403
+
+    # ---- DEF-04: demo controls disabled unless VV_DEMO_MODE=1 ----------------
+    def test_def04_demo_routes_blocked_by_default(self, db, api, monkeypatch):
+        engine.save_version("doc-demo", "alice", 1, "text", db_path=db)
+        assert api.post("/debug/fail-next-write").status_code == 403
+        assert api.post("/debug/corrupt/doc-demo/1").status_code == 403
+        assert api.post("/debug/reset?docId=doc-demo").status_code == 403
+        assert api.post("/config", json={"snapshotEvery": 3}).status_code == 403
+        assert api.post("/audit", json={"userId": "x", "docId": "doc-demo", "eventType": "fake"}).status_code == 403
+        assert engine.get_simulate_failure() is False
+
+        monkeypatch.setenv("VV_DEMO_MODE", "1")
+        assert api.post("/debug/corrupt/doc-demo/1").status_code == 200
+
+    # ---- DEF-05: submit / revision are all-or-nothing ------------------------
+    def _fail_on_call(self, monkeypatch, n):
+        """Make the n-th _insert_version call inside one test raise."""
+        original = engine._insert_version
+        calls = {"n": 0}
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == n:
+                raise RuntimeError("Injected failure for DEF-05 test")
+            return original(*args, **kwargs)
+        monkeypatch.setattr(engine, "_insert_version", flaky)
+
+    @pytest.mark.parametrize("failing_step", [1, 2])  # 1 = safety, 2 = milestone
+    def test_def05_failed_submit_changes_nothing(self, db, monkeypatch, failing_step):
+        mid = f"ms-def05-sub-{failing_step}"
+        engine.create_manuscript(mid, "Atomic Paper", "alice", initial_text="Draft", db_path=db)
+        before = engine.get_versions(mid, db_path=db)["total"]
+        self._fail_on_call(monkeypatch, failing_step)
+
+        with pytest.raises(RuntimeError):
+            engine.submit_manuscript(mid, "alice", 2, "Submitted", db_path=db)
+
+        assert engine.get_manuscript(mid, db_path=db)["status"] == "DRAFT"
+        assert engine.get_versions(mid, db_path=db)["total"] == before
+
+    def test_def05_failed_revision_changes_nothing(self, db, monkeypatch):
+        mid = "ms-def05-rev"
+        engine.create_manuscript(mid, "Atomic Rev", "alice", initial_text="Draft", db_path=db)
+        engine.submit_manuscript(mid, "alice", 2, "Submitted", db_path=db)
+        engine.assign_reviewers(mid, "eric", ["rita"], db_path=db)
+        engine.add_review(mid, "rita", 3, 1, "fix", "major", db_path=db)
+        engine.request_revision(mid, "eric", "Please revise", db_path=db)
+        before = engine.get_versions(mid, db_path=db)["total"]
+        self._fail_on_call(monkeypatch, 2)
+
+        with pytest.raises(RuntimeError):
+            engine.submit_revision(mid, "alice", 4, "Revised", db_path=db)
+
+        m = engine.get_manuscript(mid, db_path=db)
+        assert m["status"] == "REVISION_REQUESTED"
+        assert m["current_round"] == 1
+        assert engine.get_versions(mid, db_path=db)["total"] == before
